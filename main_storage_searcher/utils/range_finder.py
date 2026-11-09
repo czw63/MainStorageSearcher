@@ -55,9 +55,14 @@ class RangeFinder:
         near, remote = 0, search_step
         searched_remote = False
         while True:
-            step = (remote + near) // 2
+            step = near + (remote - near) // 2
             if abs(remote - near) <= 1:
-                pos = start_pos.offset_axis(step, offset_axis)
+                # ``near`` is the last offset that still holds a storage hopper and
+                # ``remote`` is the first one that does not, so the boundary is
+                # ``near``. Using the midpoint here returned the out-of-range side
+                # for negative search directions (e.g. -1 instead of 0) because of
+                # floor division.
+                pos = start_pos.offset_axis(near, offset_axis)
                 return int(pos[2] if offset_axis == "z" else pos[0])
 
             pos = start_pos.offset_axis(step, offset_axis)

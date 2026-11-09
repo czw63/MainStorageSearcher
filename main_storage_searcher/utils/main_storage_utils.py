@@ -48,7 +48,7 @@ class MainStorageCreator:
         time_step: float = 0.05,
     ) -> None:
         """Create a main-storage pattern by coordinating the storage helpers."""
-        self.server.execute("gamerule sendCommandFeedback false")
+        self.set_command_feedback(False)
 
         scanner = MainStorageScanner(self.server, self.api, self.hopper_matcher)
         hoppers, axis = scanner.scan_hoppers(pos, time_step)
@@ -71,6 +71,18 @@ class MainStorageCreator:
             items=items,
             hopper_slices=hopper_slices,
         )
+
+    def set_command_feedback(self, enabled: bool) -> None:
+        """Toggle the command feedback gamerule.
+
+        Minecraft 26.1 renamed every gamerule to snake_case, so
+        ``sendCommandFeedback`` no longer exists there. Send both spellings:
+        the one the running server does not know simply errors out, which is
+        harmless, and this keeps the plugin working on old and new versions.
+        """
+        value = "true" if enabled else "false"
+        self.server.execute(f"gamerule send_command_feedback {value}")
+        self.server.execute(f"gamerule sendCommandFeedback {value}")
 
     def _create_hopper_slices(
         self,
@@ -165,11 +177,12 @@ class MainStorageCreator:
                 chest_slices,
                 block="red_stained_glass",
                 end_func=(
-                    lambda server, tag: (
+                    lambda server, tag, creator: (
                         highlight_block_clear(server, tag),
-                        self.server.execute("gamerule sendCommandFeedback true"),
+                        creator.set_command_feedback(True),
                     ),
-                    (self.server, "show_chests"),
+                    (self.server, "show_chests", self),
+                    {},
                 ),
             )
         self.server.broadcast(rtr("command.add.chests_found"))
@@ -205,6 +218,15 @@ class MainStorageCreator:
         ]
 
     def do_item_has_name(self, data: Dict[str, Any]) -> bool:
+        """Return whether the item carries a custom name.
+
+        Modern servers (1.20.5+) store names in data components, so the legacy
+        ``tag.display.name`` lookup alone misses renamed items there.
+        """
+        components = data.get("components")
+        if isinstance(components, dict):
+            if "minecraft:customname" in components or "customname" in components:
+                return True
         tag = data.get("tag")
         display = tag.get("display") if isinstance(tag, dict) else None
         return isinstance(display, dict) and "name" in display

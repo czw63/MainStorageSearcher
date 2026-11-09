@@ -32,6 +32,33 @@
 
 - `minecraft_data_api`
 
+## 版本兼容（Minecraft 26.x 适配）
+
+本仓库是 [`LazyAlienServer/MainStorageSearcher`](https://github.com/LazyAlienServer/MainStorageSearcher) 的 fork，
+适配 **Minecraft Java 26.3 / 26.x**（协议 777，数据包 121.0），同时保持旧版本（1.20.5+ ~ 1.21.x）可用。
+
+针对 26.x 的改动：
+
+- **命令回显前缀**：26.1 起控制台命令反馈带 `System chat: ` 前缀，`/data get block` 与
+  `execute if block` 的回显解析现在先剥前缀；旧版本没有前缀也照常匹配。
+- **gamerule 命名**：26.1 把所有 gamerule 改成 snake_case（`sendCommandFeedback` →
+  `send_command_feedback`）。插件两条都发，跑在哪个版本都能用。
+- **`falling_block` 的 `BlockState`**：26.1 起数据组件化，`{Name:"minecraft:x"}` 会被静默丢弃
+  导致高亮实体变成空气，改用字符串形式 `BlockState:"minecraft:x"`。
+- **`ActiveEffects`**：改用字符串效果 id（`{id:"minecraft:glowing",...}`），旧写法在现代版本
+  会被忽略，标记史莱姆不发光。
+- **重命名物品识别**：1.20.5+ 起物品名在 `components` 里（`minecraft:custom_name`），
+  不再只查 `tag.display.name`，重命名物品仍会被正确跳过。
+- **坐标边界二分**：修掉负方向取整导致的边界偏移（`range` 起点少 1，多出一个空单片）。
+- **超时兜底**：命令无回显时不再带崩整个识别流程；`execute if block` 遇到非法属性值时
+  按"不匹配"处理，而不是干等 5 秒超时。
+- 官方 ToDo 里的 `en_us` 语言文件仍未提供，**MCDR 的 `language` 请设成 `zh_cn`**，
+  否则界面会显示原始翻译键。
+
+实测环境：Minecraft **26.3** + MCDReforged **2.16.2** + MinecraftDataAPI **1.6.2**，
+3 个单片的测试全物品（48 个漏斗 / 48 个箱子 / 48 种物品），`!!ms create` 完整识别，
+`axis`、`range`、`hoppers`、`chests`、`items` 全部正确，耗时约 9 秒。
+
 ## 识别全物品
 
 完整原理说明参见[原理](/docs/theory.md)

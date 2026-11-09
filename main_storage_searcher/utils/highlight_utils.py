@@ -8,7 +8,11 @@ def highlight_block_clear(server: ServerInterface, tag="mark"):
 
 @new_thread("highlight-block")
 def highlight_block(server: ServerInterface, x, y, z, new=True, block="gray_stained_glass", tag="mark", temp=1):
-    nbt = '''{Tags:["%s"],Glowing:1b,Invisible:1b,Invulnerable:1b,PersistenceRequired:1b,Silent:1b,NoGravity:1b,Time:%s,DropItem:0b,HurtEntities:0b,BlockState:{Name:"minecraft:%s"}}'''%(tag, temp, block)
+    # Since Minecraft 26.1 the BlockState field of falling_block takes the new
+    # data-component form (a plain block-state id string). The old
+    # {Name:"minecraft:..."} compound is silently dropped, which yields an
+    # invisible/air entity, so use the string form.
+    nbt = '''{Tags:["%s"],Glowing:1b,Invisible:1b,Invulnerable:1b,PersistenceRequired:1b,Silent:1b,NoGravity:1b,Time:%s,DropItem:0b,HurtEntities:0b,BlockState:"minecraft:%s"}'''%(tag, temp, block)
     if new:
         server.execute(f"kill @e[tag={tag}]")
     server.execute(f"summon minecraft:falling_block {int(x)} {int(y)} {int(z)} {nbt}")
@@ -51,7 +55,10 @@ def highlight_block_by_entity(server: ServerInterface, x, y, z, new="highlight_e
         tag.append(new)
         server.execute(f"kill @e[tag={new}]")
     tag = ",".join(tag)
-    nbt = '''{Tags:[%s],Glowing:1b,NoAI:1b,Invulnerable:1b,PersistenceRequired:1b,CanPickUpLoot:0b,Silent:1b,NoGravity:1b,DeathLootTable:"entities/empty",ActiveEffects:[{Id:14,Amplifier:0,Duration:199980}],DeathTime:19b}'''%tag
+    # ActiveEffects uses the string effect id form since Minecraft 1.20.5
+    # ({Id:14,...} is silently ignored on modern servers, so the marker slime
+    # would not glow).
+    nbt = '''{Tags:[%s],Glowing:1b,NoAI:1b,Invulnerable:1b,PersistenceRequired:1b,CanPickUpLoot:0b,Silent:1b,NoGravity:1b,Size:0,DeathLootTable:"entities/empty",ActiveEffects:[{id:"minecraft:glowing",amplifier:0,duration:199980}],DeathTime:19b}'''%tag
     server.execute(f"summon slime {x} {y} {z} {nbt}")
     if duration:
         time.sleep(duration)

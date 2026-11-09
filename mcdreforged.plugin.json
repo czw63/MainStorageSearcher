@@ -1,10 +1,10 @@
 {
 	"id": "main_storage_searcher",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"name": "MS-Searcher",
 	"description": {
-		"en_us": "Help you search specific item in main storage",
-		"zh_cn": "帮助你在全物品中寻找指定物品"
+		"en_us": "Help you search specific item in main storage (Minecraft 26.x compatible)",
+		"zh_cn": "帮助你在全物品中寻找指定物品（已适配 Minecraft 26.x）"
 	},
 	"author": [
 		"tanh_Heng"
