@@ -1,11 +1,12 @@
 import time, difflib, os, re
+import threading
 from main_storage_searcher.utils.highlight_utils import *
 from main_storage_searcher.utils.display_utils import rtr, rtr_minecraft, help_msg
 from main_storage_searcher.utils.pos_utils import DynamicPos
 from main_storage_searcher.utils.config_utils import Config
 from main_storage_searcher.utils.hopper_matcher import HopperMatcher
 from main_storage_searcher.utils.main_storage_utils import MainStorageCreator, MainStorageData
-from mcdreforged.api.all import PluginServerInterface, CommandSource, CommandContext, new_thread, SimpleCommandBuilder, Text, Number, Info, RTextList, RText, RAction
+from mcdreforged.api.all import PluginServerInterface, CommandSource, CommandContext, new_thread, SimpleCommandBuilder, Text, Integer, Info, RTextList, RText, RAction
 from minecraft_data_api import get_player_coordinate
 
 
@@ -13,6 +14,7 @@ class MainStorageManager:
 
     def __init__(self, server: PluginServerInterface, config: Config) -> None:
         self.has_task = False
+        self._task_lock = threading.Lock()
         self.ms_creator = MainStorageCreator(server)
         self.current_ms : MainStorageData = self.ms_creator.load_ms_data(default) if (default := config.main_storage.default) is not None else None 
         self.server = server
@@ -33,8 +35,8 @@ class MainStorageManager:
         builder.command("!!ms unload", self.unlaod)
         builder.command("!!ms reload", self.reload)
         builder.command("!!ms setdefault", self.set_default)
-        builder.arg("x", Number)
-        builder.arg("y", Number)
+        builder.arg("x", Integer)
+        builder.arg("y", Integer)
         builder.command("!!ms highlight <name> <x> <y>", self.highlight)
         builder.register(server)
 
@@ -51,18 +53,21 @@ class MainStorageManager:
         if not source.has_permission(self.config.permission.create):
             source.reply(rtr("command.permission_denied"))
             return
-        if self.has_task:
-            source.reply(rtr("command.add.has_task"))
-            return
-        try:
+        # 检查与占用必须原子完成，拒绝的执行路径不能释放别人的任务资格。
+        with self._task_lock:
+            if self.has_task:
+                source.reply(rtr("command.add.has_task"))
+                return
             self.has_task = True
+        try:
             pos = get_player_coordinate(source.player)
             self.ms_creator.create((int(pos.x), int(pos.y), int(pos.z-1)), context["name"])
-            self.has_task = False
         except Exception as e:
-            self.has_task = False
             source.reply(rtr("command.add.error", e=e))
-            raise e
+            raise
+        finally:
+            with self._task_lock:
+                self.has_task = False
     
     def load(self, source: CommandSource, context: CommandContext):
         if not source.has_permission(self.config.permission.load):
@@ -124,7 +129,7 @@ class MainStorageManager:
         best = {"similarity": -1, "pos": (0, 0), "item": "", "target_index": -1}
         for slice_index, items in enumerate(current_ms["items"]):
             for chest_index, item in enumerate(items):
-                if item is None:
+                if item is None or chest_index >= len(current_ms["chests"]) or not current_ms["chests"][chest_index]:
                     continue
                 normalized_item = self.hopper_matcher.normalize_item_name(item)
                 similarity = difflib.SequenceMatcher(
@@ -145,9 +150,11 @@ class MainStorageManager:
             source.reply(rtr("command.search.nodata"))
             return
         target.pop(best["target_index"])
+        if not self.highlight_handler(current_ms, best["pos"][0], best["pos"][1], best["item"]):
+            source.reply(rtr("command.search.nodata"))
+            return
         source.reply(rtr("command.search.best", item=best["item"]))
         source.reply(RTextList(rtr("command.search.others_1"), *[RText(f"§3{item} ").c(RAction.run_command, f"!!ms highlight {item} {pos[0]} {pos[1]}") for item, pos in target], rtr("command.search.others_2", False)))
-        self.highlight_handler(best["pos"][0], best["pos"][1], best["item"])
 
     
     @new_thread("ms-highlight")
@@ -159,13 +166,25 @@ class MainStorageManager:
         if not current_ms:
             source.reply(rtr("nodata"))
             return
-        source.reply(rtr("command.highlight.success", item=context["name"]))
-        self.highlight_handler(context["x"], context["y"], context["name"])
+        if self.highlight_handler(current_ms, context["x"], context["y"], context["name"]):
+            source.reply(rtr("command.highlight.success", item=context["name"]))
+        else:
+            source.reply(RTextList(
+                rtr("command.search.nodata"),
+                RText("（无法高亮：索引必须是范围内的非负整数，且对应箱子组不能为空。）"),
+            ))
         
     
-    def highlight_handler(self, slice_index, chest_index, item=None):
-        self.highlight_flag = item
-        current_ms = self.current_ms
+    def highlight_handler(self, current_ms, slice_index, chest_index, item=None) -> bool:
+        if current_ms is None:
+            return False
+        # 命令和搜索共用同一入口校验，负数不能被 Python 当作倒数索引。
+        if (
+            type(slice_index) is not int or type(chest_index) is not int
+            or not 0 <= slice_index < current_ms["range"][1] - current_ms["range"][0] + 1
+            or not 0 <= chest_index < len(current_ms["chests"])
+        ):
+            return False
         slice_pos = current_ms["range"][0] + slice_index
         chests = current_ms["chests"][chest_index]
         if not chests:
@@ -174,12 +193,22 @@ class MainStorageManager:
                 slice_index,
                 chest_index,
             )
-            return
-        main_axis = "x" if self.current_ms["axis"] == "z" else "z"
+            return False
+        self.highlight_flag = item
+        # 整次高亮只读调用方快照，避免 load/reload/unload 中途切换定位数据。
+        main_axis = "x" if current_ms["axis"] == "z" else "z"
         chest_pos = (sum(DynamicPos(chest) for chest in chests)/len(chests)).set_axis(slice_pos, main_axis)
         highlight_block_by_entity(self.server, *chest_pos, duration=12)
         prompt_slice = [DynamicPos(pos).set_axis(slice_pos, main_axis) for chest in current_ms["chests"] for pos in chest]
-        for i in range(5):
+        # 5 轮重刷共约 10 秒，必须放到后台线程，否则 search / highlight 命令
+        # 要等全部刷完才能回复玩家。
+        self._run_highlight_prompt(prompt_slice, item)
+        return True
+
+    @new_thread("ms-highlight-prompt")
+    def _run_highlight_prompt(self, prompt_slice, item):
+        """反复重刷红色玻璃提示，直到被新的高亮顶掉或刷满 5 轮。"""
+        for _ in range(5):
             highlight_block_multi(self.server, prompt_slice, block="red_stained_glass", wait=0.3)
             time.sleep(2)
             if self.highlight_flag != item:

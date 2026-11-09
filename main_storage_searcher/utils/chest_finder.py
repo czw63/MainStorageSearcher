@@ -41,7 +41,7 @@ class ChestFinder:
                 pos,
             )
             return None
-        visit_key = (tuple(pos), "hopper" if hopper else "block")
+        visit_key = (tuple(pos), "hopper" if hopper else "block", source_facing)
         if visit_key in visited:
             self.server.logger.warning(
                 "Detected a chest search cycle at %s (%s).",
@@ -50,89 +50,92 @@ class ChestFinder:
             )
             return None
         visited.add(visit_key)
-
-        highlight_block_timer(self.server, *pos, wait=0.5)
-        if hopper:
-            facings = ["down", "west", "east"] if axis == "x" else ["down", "north", "south"]
-            for facing in facings:
-                if self.block_tester.test_block(*pos, block=f"hopper[facing={facing}]"):
-                    if source_facing == facing:
-                        self.server.logger.warning(
-                            "Hopper[facing=%s] at %s has an opposite facing with its previous hopper.",
-                            facing,
-                            pos,
+        try:
+            highlight_block_timer(self.server, *pos, wait=0.5)
+            if hopper:
+                facings = ["down", "west", "east"] if axis == "x" else ["down", "north", "south"]
+                for facing in facings:
+                    if self.block_tester.test_block(*pos, block=f"hopper[facing={facing}]"):
+                        if source_facing == facing:
+                            self.server.logger.warning(
+                                "Hopper[facing=%s] at %s has an opposite facing with its previous hopper.",
+                                facing,
+                                pos,
+                            )
+                            return None
+                        result = self.find_target_chest(
+                            pos.offset_facing(1, facing),
+                            axis,
+                            hopper=False,
+                            source_facing=opposite_facing(facing),
+                            visited=visited,
+                            depth=depth + 1,
                         )
-                        return None
-                    result = self.find_target_chest(
-                        pos.offset_facing(1, facing),
+                        if result is not None:
+                            return result
+                        break
+                else:
+                    self.server.logger.warning(
+                        "Hopper at %s does not match any facing with slice axis = %s",
+                        pos,
                         axis,
-                        hopper=False,
-                        source_facing=opposite_facing(facing),
-                        visited=visited,
-                        depth=depth + 1,
                     )
-                    if result is not None:
-                        return result
-                    break
-            else:
-                self.server.logger.warning(
-                    "Hopper at %s does not match any facing with slice axis = %s",
-                    pos,
-                    axis,
-                )
+                    return None
+
+                if facing != "down":
+                    new_pos = pos.offset_facing(1, "down")
+                    if self.block_tester.test_block(*new_pos, block="hopper"):
+                        return self.find_target_chest(
+                            new_pos,
+                            axis,
+                            source_facing="up",
+                            visited=visited,
+                            depth=depth + 1,
+                        )
                 return None
 
-            if facing != "down":
-                new_pos = pos.offset_facing(1, "down")
-                if self.block_tester.test_block(*new_pos, block="hopper"):
-                    return self.find_target_chest(
-                        new_pos,
-                        axis,
-                        source_facing="up",
-                        visited=visited,
-                        depth=depth + 1,
-                    )
-            return None
+            block_data = self.api.get_block_data(*pos, path="id")
+            if block_data is None:
+                return None
 
-        block_data = self.api.get_block_data(*pos, path="id")
-        if block_data is None:
-            return None
-
-        block_id = block_data["data"]
-        if block_id == "minecraft:hopper":
+            block_id = block_data["data"]
+            if block_id == "minecraft:hopper":
+                return self.find_target_chest(
+                    pos,
+                    axis,
+                    source_facing=source_facing,
+                    visited=visited,
+                    depth=depth + 1,
+                )
+            if block_id == "minecraft:dropper":
+                facings = ["up", "west", "east", "down"] if axis == "x" else ["up", "north", "south", "down"]
+                for facing in facings:
+                    if facing == source_facing:
+                        continue
+                    if self.block_tester.test_block(*pos, block=f"dropper[facing={facing}]"):
+                        return self.find_target_chest(
+                            pos.offset_facing(1, facing),
+                            axis,
+                            hopper=False,
+                            source_facing=opposite_facing(facing),
+                            visited=visited,
+                            depth=depth + 1,
+                        )
+                return None
+            if block_id == "minecraft:chest":
+                highlight_block(self.server, *pos, tag="target_chests", new=False)
+                return pos
             return self.find_target_chest(
-                pos,
+                pos.offset_facing(1, "down"),
                 axis,
-                source_facing=source_facing,
+                hopper=False,
+                source_facing="up",
                 visited=visited,
                 depth=depth + 1,
             )
-        if block_id == "minecraft:dropper":
-            facings = ["up", "west", "east", "down"] if axis == "x" else ["up", "north", "south", "down"]
-            for facing in facings:
-                if facing == source_facing:
-                    continue
-                if self.block_tester.test_block(*pos, block=f"dropper[facing={facing}]"):
-                    return self.find_target_chest(
-                        pos.offset_facing(1, facing),
-                        axis,
-                        hopper=False,
-                        source_facing=opposite_facing(facing),
-                        visited=visited,
-                        depth=depth + 1,
-                    )
-            return None
-        if block_id == "minecraft:chest":
-            highlight_block(self.server, *pos, tag="target_chests", new=False)
-            return pos
-        return self.find_target_chest(
-            pos.offset_facing(1, "down"),
-            axis,
-            hopper=False,
-            source_facing="up",
-            visited=visited,
-            depth=depth + 1,
-        )
+        finally:
+            # visited 只代表当前路径，退出时清理，允许兄弟分支换入口再次访问。
+            visited.remove(visit_key)
 
     def complete_chest_group(
         self,

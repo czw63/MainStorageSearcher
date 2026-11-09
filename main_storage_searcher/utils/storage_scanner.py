@@ -62,6 +62,15 @@ class MainStorageScanner:
 
         if axis is None:
             raise MainStorageCreatingError("Cannot recognize axis of the specific slice.")
+        # 定轴前两条扫描线都会积累候选，必须以玩家平面而非首个候选为基准。
+        plane_index = 2 if axis == "x" else 0
+        plane_coordinate = player_z if axis == "x" else player_x
+        filtered = [pos for pos in hoppers if pos[plane_index] == plane_coordinate]
+        if len(filtered) != len(hoppers):
+            self.server.logger.info("Filtered %s off-axis hoppers.", len(hoppers) - len(filtered))
+        if not filtered:
+            raise MainStorageCreatingError("扫描到的漏斗不在玩家所在平面。")
+        hoppers = filtered
         return hoppers, axis
 
     def _find_new_hoppers(
