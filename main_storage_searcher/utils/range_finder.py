@@ -52,27 +52,38 @@ class RangeFinder:
         offset_axis: str,
         search_step: int,
     ) -> int:
-        near, remote = 0, search_step
-        searched_remote = False
-        while True:
-            step = near + (remote - near) // 2
-            if abs(remote - near) <= 1:
-                # ``near`` is the last offset that still holds a storage hopper and
-                # ``remote`` is the first one that does not, so the boundary is
-                # ``near``. Using the midpoint here returned the out-of-range side
-                # for negative search directions (e.g. -1 instead of 0) because of
-                # floor division.
-                pos = start_pos.offset_axis(near, offset_axis)
-                return int(pos[2] if offset_axis == "z" else pos[0])
+        """Find the outermost hopper by exponential expansion followed by bisection."""
+        direction = 1 if search_step >= 0 else -1
+        near = 0
+        remote = None
 
-            pos = start_pos.offset_axis(step, offset_axis)
+        # 指数扩展直到第一次遇到非漏斗，避免固定 ±256 把更大的全物品截断。
+        step = 1
+        while step <= 4096:
+            offset = direction * step
+            pos = start_pos.offset_axis(offset, offset_axis)
             highlight_block_timer(self.server, *pos, wait=0.2)
             block_data = self.api.get_block_data(*pos)
-            if block_data is not None and self.matcher.is_valid_hopper(block_data["data"]):
-                if not searched_remote:
-                    near, step = step, step * 2
-                    continue
-                near = step
+            if block_data is not None and self.matcher.is_hopper_block(block_data["data"]):
+                near = offset
+                step *= 2
             else:
-                remote = step
-            searched_remote = True
+                remote = offset
+                break
+
+        if remote is None:
+            pos = start_pos.offset_axis(near, offset_axis)
+            return int(pos[2] if offset_axis == "z" else pos[0])
+
+        while abs(remote - near) > 1:
+            mid = near + (remote - near) // 2
+            pos = start_pos.offset_axis(mid, offset_axis)
+            highlight_block_timer(self.server, *pos, wait=0.2)
+            block_data = self.api.get_block_data(*pos)
+            if block_data is not None and self.matcher.is_hopper_block(block_data["data"]):
+                near = mid
+            else:
+                remote = mid
+
+        pos = start_pos.offset_axis(near, offset_axis)
+        return int(pos[2] if offset_axis == "z" else pos[0])

@@ -1,5 +1,7 @@
 import queue
 import re
+import threading
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
@@ -46,6 +48,7 @@ class AbstractDataGetter(ABC):
         self.server = server
         self.queue = queue.Queue()
         self.task_count = 0
+        self._lock = threading.Lock()
         self.pattern: re.Pattern
     
     @abstractmethod
@@ -64,31 +67,55 @@ class BlockDataGetter(AbstractDataGetter):
 
     def get_block_data(self, x, y, z, path = None) -> Optional[BlockData]:
         path = " "+path if path else ""
-        self.task_count += 1
+        with self._lock:
+            self.task_count += 1
         self.server.execute(f"data get block {int(x)} {int(y)} {int(z)}"+path)
         try:
             return self.queue.get(timeout=5)
         except queue.Empty:
-            self.task_count = max(0, self.task_count - 1)
+            with self._lock:
+                self.task_count = max(0, self.task_count - 1)
             return None
 
-    def get_multi_block_data(self, multi_pos: List[Tuple[int, int, int]], path = None) -> List[BlockData]:
-        multi_block_data = []
+    def get_multi_block_data(self, multi_pos: List[Tuple[int, int, int]], path = None) -> List[Optional[BlockData]]:
+        multi_block_data: List[Optional[BlockData]] = []
+        path = " "+path if path else ""
         for pos in multi_pos:
             x, y, z = pos
-            self.task_count += 1
-            self.server.execute(f"data get block {int(x)} {int(y)} {int(z)}")
-        for i in range(len(multi_pos)):
+            with self._lock:
+                self.task_count += 1
+            self.server.execute(f"data get block {int(x)} {int(y)} {int(z)}"+path)
+
+        # 所有命令共用同一个截止时间，避免按位置串行等待 5 秒。
+        deadline = time.monotonic() + max(5.0, len(multi_pos) * 0.5)
+        for _ in range(len(multi_pos)):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                if (result := self.queue.get(timeout=5)):
-                    multi_block_data.append(result)
+                # 服务端按命令顺序回显，FIFO 顺序就是位置顺序；None 也必须保留。
+                multi_block_data.append(self.queue.get(timeout=remaining))
             except queue.Empty:
-                self.task_count = max(0, self.task_count - 1)
+                break
+
+        if len(multi_block_data) < len(multi_pos):
+            missing = len(multi_pos) - len(multi_block_data)
+            with self._lock:
+                self.task_count = max(0, self.task_count - missing)
+            self.server.logger.warning(
+                "No block data response for %s of %s positions.",
+                missing,
+                len(multi_pos),
+            )
+            multi_block_data.extend([None] * missing)
         return multi_block_data
 
     def on_info(self, server: ServerInterface, info: Info):
-        if not info.is_from_server or self.task_count == 0:
+        if not info.is_from_server:
             return
+        with self._lock:
+            if self.task_count <= 0:
+                return
         content = strip_feedback_prefix(info.content)
         if (result := self.pattern.match(content)) is not None:
             parsed_data = MinecraftJsonParser().convert_minecraft_json(result.group("data"))
@@ -100,10 +127,12 @@ class BlockDataGetter(AbstractDataGetter):
                 ),
                 "data": normalize_nbt_data(parsed_data),
             })
-            self.task_count -= 1
+            with self._lock:
+                self.task_count = max(0, self.task_count - 1)
         elif content in ["That position is not loaded", "The target block is not a block entity"]:
             self.queue.put(None)
-            self.task_count -= 1
+            with self._lock:
+                self.task_count = max(0, self.task_count - 1)
 
 class BlockTester(AbstractDataGetter):
     
@@ -113,27 +142,33 @@ class BlockTester(AbstractDataGetter):
         self.invalid_property_pattern = re.compile(r"^Block .+ does not accept .+ for .+ property")
 
     def test_block(self, x, y, z, block):
-        self.task_count += 1
+        with self._lock:
+            self.task_count += 1
         self.server.execute(f"execute if block {int(x)} {int(y)} {int(z)} {block}")
         # self.server.logger.info(f"execute if block {int(x)} {int(y)} {int(z)} {block}")
         try:
             return self.queue.get(timeout=5)
         except queue.Empty:
-            self.task_count = max(0, self.task_count - 1)
+            with self._lock:
+                self.task_count = max(0, self.task_count - 1)
             return False
 
     def on_info(self, server: ServerInterface, info: Info):
-        if not info.is_from_server or self.task_count == 0:
+        if not info.is_from_server:
             return
+        with self._lock:
+            if self.task_count <= 0:
+                return
         content = strip_feedback_prefix(info.content)
         if (result := self.pattern.match(content)) is not None:
             self.queue.put(result.group("status") == "passed")
-            self.task_count -= 1
+            with self._lock:
+                self.task_count = max(0, self.task_count - 1)
             # self.server.logger.info(result.group("status"))
         elif self.invalid_property_pattern.match(content):
             # e.g. "Block minecraft:hopper does not accept 'up' for facing property"
             # The server rejects the predicate instead of replying "Test failed",
             # so answer False here to keep the caller from waiting out its timeout.
             self.queue.put(False)
-            self.task_count -= 1
-
+            with self._lock:
+                self.task_count = max(0, self.task_count - 1)

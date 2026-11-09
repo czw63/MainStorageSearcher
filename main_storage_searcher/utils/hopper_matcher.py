@@ -4,6 +4,10 @@ from typing import Any, Dict
 class HopperMatcher:
     """Handle hopper validation and normalized item-name matching."""
 
+    def is_hopper_block(self, block_data) -> bool:
+        """Return whether block data describes a hopper, regardless of contents."""
+        return isinstance(block_data, dict) and block_data.get("id") == "minecraft:hopper"
+
     def is_valid_hopper(self, block_data: Dict[str, Any]) -> bool:
         """Return whether block data describes a usable storage hopper."""
         if not isinstance(block_data, dict) or block_data.get("id") != "minecraft:hopper":

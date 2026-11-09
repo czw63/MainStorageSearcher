@@ -48,19 +48,21 @@ def highlight_block_timer(server: ServerInterface, x, y, z, block="gray_stained_
     server.execute(f"kill @e[tag=temp{id}]")
 
 @new_thread("highlight-block-by-entity")
-def highlight_block_by_entity(server: ServerInterface, x, y, z, new="highlight_entity", tag=[], duration: int = 0):
+def highlight_block_by_entity(server: ServerInterface, x, y, z, new="highlight_entity", tag: Optional[List[str]] = None, duration: int = 0):
+    tags = list(tag or [])
+    unique_tag = None
     if duration > 0:
-        tag.append(f"highlight_entity{time.time()}")
+        unique_tag = f"highlight_entity{time.time()}"
+        tags.append(unique_tag)
     if new:
-        tag.append(new)
+        tags.append(new)
         server.execute(f"kill @e[tag={new}]")
-    tag = ",".join(tag)
+    tag = ",".join(tags)
     # ActiveEffects uses the string effect id form since Minecraft 1.20.5
     # ({Id:14,...} is silently ignored on modern servers, so the marker slime
     # would not glow).
     nbt = '''{Tags:[%s],Glowing:1b,NoAI:1b,Invulnerable:1b,PersistenceRequired:1b,CanPickUpLoot:0b,Silent:1b,NoGravity:1b,Size:0,DeathLootTable:"entities/empty",ActiveEffects:[{id:"minecraft:glowing",amplifier:0,duration:199980}],DeathTime:19b}'''%tag
     server.execute(f"summon slime {x} {y} {z} {nbt}")
-    if duration:
+    if unique_tag is not None:
         time.sleep(duration)
-        server.execute(f"kill @e[tag={new}]")
-    
+        server.execute(f"kill @e[tag={unique_tag}]")

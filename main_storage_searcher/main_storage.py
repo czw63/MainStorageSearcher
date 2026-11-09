@@ -86,7 +86,15 @@ class MainStorageManager:
             source.reply(rtr("nodata"))
             return
         name = self.current_ms["name"]
-        self.current_ms = self.ms_creator.load_ms_data(name)
+        try:
+            data = self.ms_creator.load_ms_data(name)
+        except Exception as error:
+            source.reply(rtr("command.add.error", e=error))
+            return
+        if data is None:
+            source.reply(rtr("command.load.notfound", name=name))
+            return
+        self.current_ms = data
         source.reply(rtr("command.reload.success", name=name))
     
     def unlaod(self, source: CommandSource, context: CommandContext):
@@ -142,6 +150,7 @@ class MainStorageManager:
         self.highlight_handler(best["pos"][0], best["pos"][1], best["item"])
 
     
+    @new_thread("ms-highlight")
     def highlight(self, source: CommandSource, context: CommandContext):
         if not source.has_permission(self.config.permission.highlight):
             source.reply(rtr("command.permission_denied"))
@@ -159,6 +168,13 @@ class MainStorageManager:
         current_ms = self.current_ms
         slice_pos = current_ms["range"][0] + slice_index
         chests = current_ms["chests"][chest_index]
+        if not chests:
+            self.server.logger.warning(
+                "Chest group at slice %s, index %s is empty; skip highlight.",
+                slice_index,
+                chest_index,
+            )
+            return
         main_axis = "x" if self.current_ms["axis"] == "z" else "z"
         chest_pos = (sum(DynamicPos(chest) for chest in chests)/len(chests)).set_axis(slice_pos, main_axis)
         highlight_block_by_entity(self.server, *chest_pos, duration=12)

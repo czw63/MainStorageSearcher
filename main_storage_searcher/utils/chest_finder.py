@@ -29,8 +29,28 @@ class ChestFinder:
         axis: str,
         hopper: bool = True,
         source_facing: Optional[str] = None,
+        visited: Optional[set] = None,
+        depth: int = 0,
     ) -> Optional[Tuple[int, int, int]]:
         """Recursively search for a chest through hopper/dropper chains."""
+        if visited is None:
+            visited = set()
+        if depth >= 64:
+            self.server.logger.warning(
+                "Maximum chest search depth exceeded at %s.",
+                pos,
+            )
+            return None
+        visit_key = (tuple(pos), "hopper" if hopper else "block")
+        if visit_key in visited:
+            self.server.logger.warning(
+                "Detected a chest search cycle at %s (%s).",
+                pos,
+                visit_key[1],
+            )
+            return None
+        visited.add(visit_key)
+
         highlight_block_timer(self.server, *pos, wait=0.5)
         if hopper:
             facings = ["down", "west", "east"] if axis == "x" else ["down", "north", "south"]
@@ -48,6 +68,8 @@ class ChestFinder:
                         axis,
                         hopper=False,
                         source_facing=opposite_facing(facing),
+                        visited=visited,
+                        depth=depth + 1,
                     )
                     if result is not None:
                         return result
@@ -63,7 +85,13 @@ class ChestFinder:
             if facing != "down":
                 new_pos = pos.offset_facing(1, "down")
                 if self.block_tester.test_block(*new_pos, block="hopper"):
-                    return self.find_target_chest(new_pos, axis, source_facing="up")
+                    return self.find_target_chest(
+                        new_pos,
+                        axis,
+                        source_facing="up",
+                        visited=visited,
+                        depth=depth + 1,
+                    )
             return None
 
         block_data = self.api.get_block_data(*pos, path="id")
@@ -72,7 +100,13 @@ class ChestFinder:
 
         block_id = block_data["data"]
         if block_id == "minecraft:hopper":
-            return self.find_target_chest(pos, axis, source_facing=source_facing)
+            return self.find_target_chest(
+                pos,
+                axis,
+                source_facing=source_facing,
+                visited=visited,
+                depth=depth + 1,
+            )
         if block_id == "minecraft:dropper":
             facings = ["up", "west", "east", "down"] if axis == "x" else ["up", "north", "south", "down"]
             for facing in facings:
@@ -84,6 +118,8 @@ class ChestFinder:
                         axis,
                         hopper=False,
                         source_facing=opposite_facing(facing),
+                        visited=visited,
+                        depth=depth + 1,
                     )
             return None
         if block_id == "minecraft:chest":
@@ -94,6 +130,8 @@ class ChestFinder:
             axis,
             hopper=False,
             source_facing="up",
+            visited=visited,
+            depth=depth + 1,
         )
 
     def complete_chest_group(

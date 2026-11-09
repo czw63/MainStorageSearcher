@@ -72,6 +72,8 @@ class MainStorageScanner:
         """Get valid, previously undiscovered hopper positions."""
         new_hoppers = []
         for block_data in self.api.get_multi_block_data(positions):
+            if block_data is None:
+                continue
             data = block_data["data"]
             pos = tuple(int(coordinate) for coordinate in block_data["pos"])
             if self.matcher.is_valid_hopper(data) and not self._is_covered(pos, hoppers):

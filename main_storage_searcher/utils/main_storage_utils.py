@@ -48,29 +48,39 @@ class MainStorageCreator:
         time_step: float = 0.05,
     ) -> None:
         """Create a main-storage pattern by coordinating the storage helpers."""
-        self.set_command_feedback(False)
+        try:
+            self.set_command_feedback(False)
 
-        scanner = MainStorageScanner(self.server, self.api, self.hopper_matcher)
-        hoppers, axis = scanner.scan_hoppers(pos, time_step)
+            scanner = MainStorageScanner(self.server, self.api, self.hopper_matcher)
+            hoppers, axis = scanner.scan_hoppers(pos, time_step)
 
-        range_finder = RangeFinder(self.server, self.api, self.hopper_matcher)
-        start, end = range_finder.find_range(hoppers, axis)
+            range_finder = RangeFinder(self.server, self.api, self.hopper_matcher)
+            start, end = range_finder.find_range(hoppers, axis)
 
-        hopper_slices = self._create_hopper_slices(hoppers, start, end, axis)
-        items = self._extract_items(hopper_slices)
+            hopper_slices = self._create_hopper_slices(hoppers, start, end, axis)
+            items = self._extract_items(hopper_slices)
 
-        chest_finder = ChestFinder(self.server, self.api, self.block_tester)
-        chests = self._find_all_chests(hoppers, axis, chest_finder)
+            chest_finder = ChestFinder(self.server, self.api, self.block_tester)
+            chests = self._find_all_chests(hoppers, axis, chest_finder)
 
-        self._save_and_notify(
-            name=name,
-            axis=axis,
-            storage_range=(start, end),
-            hoppers=hoppers,
-            chests=chests,
-            items=items,
-            hopper_slices=hopper_slices,
-        )
+            self._save_and_notify(
+                name=name,
+                axis=axis,
+                storage_range=(start, end),
+                hoppers=hoppers,
+                chests=chests,
+                items=items,
+                hopper_slices=hopper_slices,
+            )
+        finally:
+            try:
+                self.set_command_feedback(True)
+            except Exception as error:
+                # 恢复命令反馈失败时不能掩盖 create() 的原始异常。
+                self.server.logger.warning(
+                    "Failed to restore command feedback: %s",
+                    error,
+                )
 
     def set_command_feedback(self, enabled: bool) -> None:
         """Toggle the command feedback gamerule.
@@ -122,20 +132,43 @@ class MainStorageCreator:
         chest_finder: ChestFinder,
     ) -> List[List[Tuple[int, int, int]]]:
         """Find and complete the chest group associated with every hopper."""
+        chests: List[List[Tuple[int, int, int]]] = []
         try:
-            chests = []
             for pos in hoppers:
-                single_chest = chest_finder.find_target_chest(DynamicPos(pos), axis)
-                chests.append(
-                    chest_finder.complete_chest_group(single_chest, axis)
-                    if single_chest is not None
-                    else []
-                )
-            return chests
+                try:
+                    single_chest = chest_finder.find_target_chest(DynamicPos(pos), axis)
+                    chests.append(
+                        chest_finder.complete_chest_group(single_chest, axis)
+                        if single_chest is not None
+                        else []
+                    )
+                except Exception as error:
+                    self.server.logger.warning(
+                        "Failed to find chest for hopper at %s: %s",
+                        pos,
+                        error,
+                        exc_info=True,
+                    )
+                    chests.append([])
         except Exception as error:
             self.server.logger.warning(error, exc_info=1)
             highlight_block_clear(self.server, "target_chests")
-            return []
+            raise
+
+        highlight_block_clear(self.server, "target_chests")
+        empty_count = sum(1 for group in chests if not group)
+        if empty_count == len(chests):
+            # 一个箱子都没找到，说明轴/范围判断错了，直接失败，别保存残数据。
+            raise MainStorageCreatingError("Could not find any chest for the storage.")
+        if empty_count:
+            # 部分漏斗没接上箱子时保留空组占位，长度仍与 hoppers 对齐；
+            # 搜索命中空组时 highlight_handler 会跳过，不影响其余数据。
+            self.server.logger.warning(
+                "Could not find chests for %s of %s hopper(s); keeping empty slots.",
+                empty_count,
+                len(chests),
+            )
+        return chests
 
     def _save_and_notify(
         self,
@@ -238,7 +271,7 @@ class MainStorageCreator:
         """Extract item IDs from hoppers, ignoring renamed items."""
         result: List[Optional[str]] = []
         for block_data in self.api.get_multi_block_data(multi_pos):
-            data = block_data["data"]
+            data = block_data["data"] if block_data is not None else None
             item_list = data.get("items", []) if data is not None else []
             if not item_list:
                 result.append(None)
