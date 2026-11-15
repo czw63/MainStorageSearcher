@@ -42,12 +42,15 @@ def _install_import_stubs():
 
     class RText:
         def __init__(self, *args, **kwargs):
+            self.parts = args
             self.text = "".join(str(arg) for arg in args)
+            self.actions = []
 
         def __str__(self):
             return self.text
 
-        def c(self, *args, **kwargs):
+        def c(self, action, value, *args, **kwargs):
+            self.actions.append((action, value))
             return self
 
     class RTextList(RText):
@@ -55,6 +58,7 @@ def _install_import_stubs():
 
     class RAction:
         run_command = "run_command"
+        show_text = "show_text"
 
     class SimpleCommandBuilder:
         def arg(self, *args, **kwargs):
@@ -125,7 +129,7 @@ import main_storage_searcher.utils.storage_scanner as scanner_module
 from main_storage_searcher.main_storage import MainStorageManager
 from main_storage_searcher.utils.block_utils import BlockDataGetter, BlockTester
 from main_storage_searcher.utils.chest_finder import ChestFinder
-from main_storage_searcher.utils.config_utils import Config
+from main_storage_searcher.utils.config_utils import ClientHighlightConfig, Config
 from main_storage_searcher.utils.hopper_matcher import HopperMatcher
 from main_storage_searcher.utils.pos_utils import DynamicPos
 from main_storage_searcher.utils.range_finder import RangeFinder
@@ -457,18 +461,38 @@ class FakeSource:
 
     def __init__(self):
         self.replies = []
+        self.raw_replies = []
 
     def has_permission(self, permission):
         return True
 
     def reply(self, message):
         self.replies.append(str(message))
+        self.raw_replies.append(message)
+
+
+def iter_rtext(value):
+    if not isinstance(value, main_storage_module.RText):
+        return
+    yield value
+    for part in value.parts:
+        yield from iter_rtext(part)
+
+
+class ConfigTest(unittest.TestCase):
+    def test_client_highlight_defaults(self):
+        config = Config().client_highlight
+        self.assertTrue(config.enabled)
+        self.assertTrue(config.show_position)
+        self.assertTrue(config.clickable)
+        self.assertEqual(config.command, "highlight {x} {y} {z}")
+        self.assertTrue(config.entity_highlight)
 
 
 class MainStorageManagerTest(unittest.TestCase):
     def setUp(self):
         self.translation = mock.patch.object(main_storage_module, "rtr", side_effect=lambda key, *a, **kw: key)
-        self.translation.start()
+        self.translation_mock = self.translation.start()
         self.addCleanup(self.translation.stop)
         self.visuals = mock.patch.multiple(
             main_storage_module,
@@ -482,6 +506,7 @@ class MainStorageManagerTest(unittest.TestCase):
         self.clock.start()
         self.addCleanup(self.clock.stop)
         self.manager = MainStorageManager(FakeServer(), Config())
+        self.manager.config.client_highlight = ClientHighlightConfig()
         self.data = {
             "name": "test", "axis": "x", "range": (10, 10),
             "items": [["diamond", "diamond"]],
@@ -489,6 +514,25 @@ class MainStorageManagerTest(unittest.TestCase):
         }
         self.manager.current_ms = self.data
         self.source = FakeSource()
+
+    def _use_averaged_client_highlight_data(self):
+        self.data["axis"] = "z"
+        self.data["range"] = (532, 532)
+        self.data["chests"] = [[(100, 16, -433), (200, 18, -434)]]
+
+    def _client_translation(self, key, *args, **kwargs):
+        if key == "command.highlight.client_hint":
+            return main_storage_module.RTextList(
+                main_storage_module.RText("§a坐标§7："),
+                kwargs["pos"],
+            )
+        return key
+
+    def _client_position(self):
+        for node in iter_rtext(self.source.raw_replies[-1]):
+            if node.text.startswith("§b["):
+                return node
+        self.fail("client highlight position text not found")
 
     def test_search_skips_empty_chest_group(self):
         finish_worker(self.manager.search(self.source, {"name": "diamond"}))
@@ -526,9 +570,13 @@ class MainStorageManagerTest(unittest.TestCase):
         self.effects["highlight_block_by_entity"].assert_not_called()
 
     def test_highlight_command_reports_success_after_starting_highlight(self):
-        self.effects["highlight_block_by_entity"].side_effect = lambda *a, **kw: self.assertEqual(self.source.replies, [])
+        self.effects["highlight_block_by_entity"].side_effect = lambda *a, **kw: self.assertEqual(
+            self.source.replies, ["command.highlight.client_hint"])
         finish_worker(self.manager.highlight(self.source, {"name": "diamond", "x": 0, "y": 1}))
-        self.assertEqual(self.source.replies, ["command.highlight.success"])
+        self.assertEqual(
+            self.source.replies,
+            ["command.highlight.client_hint", "command.highlight.success"],
+        )
 
     def test_search_keeps_snapshot_when_loaded_storage_changes(self):
         entered = threading.Event()
@@ -562,6 +610,87 @@ class MainStorageManagerTest(unittest.TestCase):
         self.assertTrue(self.manager.highlight_handler(self.data, 0, 1, "diamond"))
         self.effects["highlight_block_by_entity"].assert_called_once_with(
             self.manager.server, 5.0, 64.0, 10, duration=12)
+
+    def test_client_highlight_rounds_averaged_chest_position(self):
+        self._use_averaged_client_highlight_data()
+        self.translation_mock.side_effect = self._client_translation
+        self.assertTrue(
+            self.manager.highlight_handler(
+                self.data, 0, 0, "diamond", source=self.source
+            )
+        )
+        position = self._client_position()
+        self.assertEqual(position.text, "§b[532, 17, -434]")
+        self.assertIn(
+            (main_storage_module.RAction.run_command, "highlight 532 17 -434"),
+            position.actions,
+        )
+        self.assertIn(
+            (
+                main_storage_module.RAction.show_text,
+                "command.highlight.client_hint_hover",
+            ),
+            position.actions,
+        )
+
+    def test_client_highlight_uses_custom_command_template(self):
+        self.manager.config.client_highlight.command = "!hl {x} {y} {z}"
+        self.translation_mock.side_effect = self._client_translation
+        self.manager._reply_client_highlight(
+            self.source, "diamond", DynamicPos((532, 17, -434))
+        )
+        self.assertIn(
+            (main_storage_module.RAction.run_command, "!hl 532 17 -434"),
+            self._client_position().actions,
+        )
+
+    def test_client_highlight_without_clickable_has_no_actions(self):
+        self.manager.config.client_highlight.clickable = False
+        self.translation_mock.side_effect = self._client_translation
+        self.manager._reply_client_highlight(
+            self.source, "diamond", DynamicPos((532, 17, -434))
+        )
+        self.assertEqual(self._client_position().actions, [])
+
+    def test_client_highlight_disabled_outputs_no_line(self):
+        self._use_averaged_client_highlight_data()
+        self.manager.config.client_highlight.enabled = False
+        self.assertTrue(
+            self.manager.highlight_handler(
+                self.data, 0, 0, "diamond", source=self.source
+            )
+        )
+        self.assertEqual(self.source.raw_replies, [])
+
+    def test_invalid_client_highlight_templates_fall_back(self):
+        self.translation_mock.side_effect = self._client_translation
+        for template in ("highlight {x} {y}", "highlight {}"):
+            with self.subTest(template=template):
+                self.manager.config.client_highlight.command = template
+                self.source.raw_replies.clear()
+                self.source.replies.clear()
+                self.manager._reply_client_highlight(
+                    self.source, "diamond", DynamicPos((532, 17, -434))
+                )
+                self.assertIn(
+                    (
+                        main_storage_module.RAction.run_command,
+                        "highlight 532 17 -434",
+                    ),
+                    self._client_position().actions,
+                )
+        self.assertEqual(len(self.manager.server.logger.warnings), 2)
+
+    def test_entity_highlight_disabled_skips_server_visuals(self):
+        self._use_averaged_client_highlight_data()
+        self.manager.config.client_highlight.entity_highlight = False
+        self.assertTrue(
+            self.manager.highlight_handler(
+                self.data, 0, 0, "diamond", source=self.source
+            )
+        )
+        self.effects["highlight_block_by_entity"].assert_not_called()
+        self.effects["highlight_block_multi"].assert_not_called()
 
     def test_create_admission_is_atomic_and_rejected_task_cannot_release_it(self):
         coordinate_entered = threading.Event()

@@ -15,6 +15,14 @@ class PermissionConfig(Serializable):
 class MSConfig(Serializable):
     default: Union[None, str] = None
 
+class ClientHighlightConfig(Serializable):
+    enabled: bool = True
+    show_position: bool = True
+    clickable: bool = True
+    command: str = "highlight {x} {y} {z}"
+    entity_highlight: bool = True
+
 class Config(Serializable):
     main_storage: MSConfig = MSConfig()
     permission: PermissionConfig = PermissionConfig()
+    client_highlight: ClientHighlightConfig = ClientHighlightConfig()

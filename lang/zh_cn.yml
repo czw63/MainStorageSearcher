@@ -30,6 +30,9 @@ main_storage_searcher:
 
     highlight: 
       success: §b{item}§f已高亮
+      client_hint: §a坐标§7：§b{pos}
+      client_hint_hover: §7点击高亮（需要客户端安装 §bCarpet Org Addition§7）
+      client_hint_help: §7也可手动输入 §b/highlight <x> <y> <z>
 
     setdefault:
       success: 已将§b{name}§f设置为默认加载

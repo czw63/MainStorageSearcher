@@ -32,6 +32,27 @@
 
 - `minecraft_data_api`
 
+## 客户端高亮提示（0.5.0）
+
+`!!ms search` 和 `!!ms highlight` 定位成功后，会在聊天中额外给出一行真实坐标提示。
+这段坐标可以点击，并通过客户端命令 `/highlight <x> <y> <z>` 触发高亮。
+
+玩家客户端需要安装
+[Carpet Org Addition](https://modrinth.com/mod/carpet-org-addition/versions?g=26.3)；
+Minecraft 26.3 请使用 1.46.0。服务端不需要安装 COA。
+
+没有安装 COA 的玩家点击这段坐标时会看到“未知命令”，因此假实体高亮默认保留。
+客户端高亮相关配置位于 `config.json` 的 `client_highlight`：
+
+- `enabled`：是否输出客户端高亮提示整行，默认 `true`。
+- `show_position`：是否显示 `[x, y, z]`，默认 `true`。
+- `clickable`：坐标段是否挂载客户端 `run_command` 点击事件，默认 `true`。
+- `command`：点击执行的客户端命令模板，默认 `"highlight {x} {y} {z}"`。
+- `entity_highlight`：是否仍然召唤假实体高亮并重刷红玻璃，默认 `true`。
+
+已知未验证项：Minecraft 26.x 的 tellraw click event 字段名是 `clickEvent` 还是
+`click_event`，目前还没有在真实客户端中点击验证过。
+
 ## 版本兼容（Minecraft 26.x 适配）
 
 本仓库是 [`LazyAlienServer/MainStorageSearcher`](https://github.com/LazyAlienServer/MainStorageSearcher) 的 fork，

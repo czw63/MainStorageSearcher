@@ -1,5 +1,6 @@
 import time, difflib, os, re
 import threading
+from string import Formatter
 from main_storage_searcher.utils.highlight_utils import *
 from main_storage_searcher.utils.display_utils import rtr, rtr_minecraft, help_msg
 from main_storage_searcher.utils.pos_utils import DynamicPos
@@ -150,7 +151,9 @@ class MainStorageManager:
             source.reply(rtr("command.search.nodata"))
             return
         target.pop(best["target_index"])
-        if not self.highlight_handler(current_ms, best["pos"][0], best["pos"][1], best["item"]):
+        if not self.highlight_handler(
+            current_ms, best["pos"][0], best["pos"][1], best["item"], source=source
+        ):
             source.reply(rtr("command.search.nodata"))
             return
         source.reply(rtr("command.search.best", item=best["item"]))
@@ -166,7 +169,9 @@ class MainStorageManager:
         if not current_ms:
             source.reply(rtr("nodata"))
             return
-        if self.highlight_handler(current_ms, context["x"], context["y"], context["name"]):
+        if self.highlight_handler(
+            current_ms, context["x"], context["y"], context["name"], source=source
+        ):
             source.reply(rtr("command.highlight.success", item=context["name"]))
         else:
             source.reply(RTextList(
@@ -175,7 +180,7 @@ class MainStorageManager:
             ))
         
     
-    def highlight_handler(self, current_ms, slice_index, chest_index, item=None) -> bool:
+    def highlight_handler(self, current_ms, slice_index, chest_index, item=None, source=None) -> bool:
         if current_ms is None:
             return False
         # 命令和搜索共用同一入口校验，负数不能被 Python 当作倒数索引。
@@ -198,12 +203,46 @@ class MainStorageManager:
         # 整次高亮只读调用方快照，避免 load/reload/unload 中途切换定位数据。
         main_axis = "x" if current_ms["axis"] == "z" else "z"
         chest_pos = (sum(DynamicPos(chest) for chest in chests)/len(chests)).set_axis(slice_pos, main_axis)
+        if self.config.client_highlight.enabled and source is not None:
+            self._reply_client_highlight(source, item, chest_pos)
+        if not self.config.client_highlight.entity_highlight:
+            return True
         highlight_block_by_entity(self.server, *chest_pos, duration=12)
         prompt_slice = [DynamicPos(pos).set_axis(slice_pos, main_axis) for chest in current_ms["chests"] for pos in chest]
         # 5 轮重刷共约 10 秒，必须放到后台线程，否则 search / highlight 命令
         # 要等全部刷完才能回复玩家。
         self._run_highlight_prompt(prompt_slice, item)
         return True
+
+    def _reply_client_highlight(self, source, item, chest_pos):
+        config = self.config.client_highlight
+        x, y, z = (int(round(float(value))) for value in chest_pos[:3])
+        template = config.command
+        try:
+            fields = {
+                field_name
+                for _, field_name, _, _ in Formatter().parse(template)
+                if field_name is not None
+            }
+            if not {"x", "y", "z"}.issubset(fields):
+                raise ValueError("client highlight command template is missing coordinates")
+            command = template.format(x=x, y=y, z=z)
+        except (KeyError, IndexError, ValueError):
+            self.server.logger.warning(
+                "Invalid client highlight command template %r; falling back to default.",
+                template,
+            )
+            command = f"highlight {x} {y} {z}"
+        if not config.show_position:
+            return
+        position_text = RText(f"§b[{x}, {y}, {z}]")
+        if config.clickable:
+            position_text.c(RAction.run_command, command)
+            position_text.c(
+                RAction.show_text,
+                rtr("command.highlight.client_hint_hover", False),
+            )
+        source.reply(rtr("command.highlight.client_hint", pos=position_text))
 
     @new_thread("ms-highlight-prompt")
     def _run_highlight_prompt(self, prompt_slice, item):
