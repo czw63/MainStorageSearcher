@@ -238,10 +238,9 @@ class MainStorageManager:
         position_text = RText(f"§b[{x}, {y}, {z}]")
         if config.clickable:
             position_text.c(RAction.run_command, command)
-            position_text.c(
-                RAction.show_text,
-                rtr("command.highlight.client_hint_hover", False),
-            )
+            # hover 提示属于悬停事件（RHoverAction.show_text），不是点击事件；
+            # MCDR 的 RClickAction 里没有 show_text 这个成员，当点击动作用会在运行时 AttributeError。
+            position_text.h(rtr("command.highlight.client_hint_hover", False))
         source.reply(rtr("command.highlight.client_hint", pos=position_text))
 
     @new_thread("ms-highlight-prompt")

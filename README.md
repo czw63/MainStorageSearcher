@@ -53,6 +53,29 @@ Minecraft 26.3 请使用 1.46.0。服务端不需要安装 COA。
 已知未验证项：Minecraft 26.x 的 tellraw click event 字段名是 `clickEvent` 还是
 `click_event`，目前还没有在真实客户端中点击验证过。
 
+### 修复（0.5.1）
+
+0.5.0 一执行 `!!ms search` / `!!ms highlight` 就抛异常并掉线程：
+
+```
+AttributeError: type object 'RClickAction' has no attribute 'show_text'
+```
+
+原因是悬停提示被写成了点击事件。`show_text` 属于 `RHoverAction`（悬停事件），
+`RClickAction`（= `RAction`）里只有 `run_command` / `suggest_command` / `open_url` /
+`copy_to_clipboard` / `open_file` / `change_page` / `show_dialog`，没有 `show_text`。
+现在坐标段用 `run_command` 挂点击、hover 提示改走 `.h(...)`（`set_hover_text`），
+崩点消除，悬停提示照旧。
+
+0.5.0 的单测没拦住这处，是因为测试里 stub 的 `RAction` 自己造了个 `show_text`。
+0.5.1 把 stub 改成与 MCDR 真实成员一致，并新增两条防回归断言：源码里不许出现
+`RAction.show_text`，hover 必须用 `.h()`。
+
+另外确认过 MCDR 2.16 会按服务器版本自动切 JSON 格式（`_get_rtext_json_format`），
+`26.3` 走 `V_1_21_5`，序列化结果是
+`{"click_event":{"action":"run_command","command":"..."},"hover_event":{"action":"show_text",...}}`，
+与上面那条"未验证项"对应的正是这个新字段名。
+
 ## 版本兼容（Minecraft 26.x 适配）
 
 本仓库是 [`LazyAlienServer/MainStorageSearcher`](https://github.com/LazyAlienServer/MainStorageSearcher) 的 fork，

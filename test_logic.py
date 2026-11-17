@@ -45,6 +45,7 @@ def _install_import_stubs():
             self.parts = args
             self.text = "".join(str(arg) for arg in args)
             self.actions = []
+            self.hover = None
 
         def __str__(self):
             return self.text
@@ -53,12 +54,20 @@ def _install_import_stubs():
             self.actions.append((action, value))
             return self
 
+        def h(self, *args):
+            self.hover = args[0] if len(args) == 1 else args
+            return self
+
     class RTextList(RText):
         pass
 
     class RAction:
+        # 与 MCDR 的 RClickAction 成员保持一致：这里不许出现 show_text，
+        # show_text 属于 RHoverAction（悬停事件），点击事件里引用会 AttributeError。
         run_command = "run_command"
-        show_text = "show_text"
+        suggest_command = "suggest_command"
+        open_url = "open_url"
+        copy_to_clipboard = "copy_to_clipboard"
 
     class SimpleCommandBuilder:
         def arg(self, *args, **kwargs):
@@ -625,13 +634,12 @@ class MainStorageManagerTest(unittest.TestCase):
             (main_storage_module.RAction.run_command, "highlight 532 17 -434"),
             position.actions,
         )
-        self.assertIn(
-            (
-                main_storage_module.RAction.show_text,
-                "command.highlight.client_hint_hover",
-            ),
-            position.actions,
+        # hover 提示必须走悬停事件，而不是被塞进点击动作列表
+        self.assertEqual(
+            [action for action, _ in position.actions],
+            [main_storage_module.RAction.run_command],
         )
+        self.assertEqual(position.hover, "command.highlight.client_hint_hover")
 
     def test_client_highlight_uses_custom_command_template(self):
         self.manager.config.client_highlight.command = "!hl {x} {y} {z}"
@@ -810,6 +818,39 @@ class FindAllChestsTest(unittest.TestCase):
         hoppers = [(index, 64, 0) for index in range(3)]
         with self.assertRaises(MainStorageCreatingError):
             creator._find_all_chests(hoppers, "x", self._fake_finder({}))
+
+
+class RealMcDrApiUsageTest(unittest.TestCase):
+    """防止再把悬停/点击事件混用：MCDR 的 RClickAction 里没有 show_text。"""
+
+    def test_no_click_action_uses_show_text(self):
+        import os
+
+        root = os.path.dirname(os.path.abspath(__file__))
+        offenders = []
+        for dirpath, _, filenames in os.walk(os.path.join(root, "main_storage_searcher")):
+            for filename in filenames:
+                if not filename.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, filename)
+                with open(path, encoding="utf-8") as handle:
+                    for lineno, line in enumerate(handle, 1):
+                        if "RAction.show_text" in line or 'RAction["show_text"]' in line:
+                            offenders.append(f"{path}:{lineno}")
+        self.assertEqual(offenders, [], "show_text 是 RHoverAction 成员，不能当点击动作")
+
+    def test_hover_text_uses_h_not_c(self):
+        import os
+
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "main_storage_searcher",
+            "main_storage.py",
+        )
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("client_hint_hover", source)
+        self.assertIn(".h(rtr(\"command.highlight.client_hint_hover\"", source)
 
 
 if __name__ == "__main__":
